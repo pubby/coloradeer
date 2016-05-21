@@ -48,7 +48,7 @@ clean:
 
 objlistntsc := $(foreach o,$(objlist),$(objdir)/$(o).o)
 
-map.txt $(title).nes: uxrom.cfg $(objlistntsc)
+map.txt $(title).nes: nrom.cfg $(objlistntsc)
 	$(LD65) -o $(title).nes -m map.txt -C $^
 
 $(objdir)/%.o: $(srcdir)/%.s $(headers)

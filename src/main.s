@@ -1,6 +1,5 @@
 .include "globals.inc"
 
-.import bankswitch_y
 .import ppu_set_palette
 .import read_gamepad
 .import prepare_sprites
@@ -39,6 +38,9 @@ nbor_g:
 .align 256
 nbor_b:
     .incbin "../nbor_b.bin"
+
+pencil:
+    .incbin "../pencil.bin"
 
 pixel_masks:
     .byt %10000000
@@ -123,7 +125,6 @@ loop:
     rts
 .endproc
 
-.proc flood_fill
 nt_row_ptr = 0
 ppu_dest_ptr = 2
 chr_ptr = 4
@@ -141,6 +142,8 @@ color_row_ptr = 19
 empty_stack = 21
 color_temp = 22
 pixel_mask = 23
+
+.proc start_flood_fill
 
     lda cursor_y
     .repeat 3
@@ -184,7 +187,6 @@ pixel_mask = 23
     cpy #15
     bcc :+
     ora #$10
-    sta ppu_dest_ptr+1
     and #%00001111
     clc
     adc #.hibyte(chr2)
@@ -211,7 +213,7 @@ pixel_mask = 23
     lda (chr_ptr_alt), y
     and pixel_mask
     bne :+
-    rts ; on black
+    jmp (return_addr)
 :
     ; is green
     lda #.lobyte(nbor_g)
@@ -262,22 +264,19 @@ doneGetPixel:
     ora check_value
     sta (color_row_ptr), y
 
-    tsx
-    stx empty_stack
     lda tile_y
     pha
     lda tile_x
     pha
 
-pullLoop:
-    tsx
-    cpx empty_stack
-    bne :+
-    rts
-:
+    lda #1
+    sta is_flooding
+    jmp (return_addr)
+.endproc
 
+
+.proc flood_fill_step
     ; Pull the tile to update on and prepare pointers.
-
     pla
     sta tile_x
     pla
@@ -338,11 +337,11 @@ pullLoop:
     ; Prepare updates to the pattern tables.
 
     lda #0
-    ldx #0
+    ldy #0
 :
-    sta chr_buf, x
-    inx
-    cpx #16
+    sta (chr_addr), y
+    iny
+    cpy #16
     bne :-
 
     ldy #0
@@ -365,60 +364,44 @@ ptLoop:
     lsr color_temp
     bcc :+
     lda r
-    ora chr_buf, y
-    sta chr_buf, y
+    ora (chr_addr), y
+    sta (chr_addr), y
 :
     lsr color_temp
     bcc :+
     lda r
-    ora chr_buf+8, y
-    sta chr_buf+8, y
+    ora (chr_addr_alt), y
+    sta (chr_addr_alt), y
 :
 
     lsr color_temp
     bcc :+
     lda g
-    ora chr_buf, y
-    sta chr_buf, y
+    ora (chr_addr), y
+    sta (chr_addr), y
 :
     lsr color_temp
     bcc :+
     lda g
-    ora chr_buf+8, y
-    sta chr_buf+8, y
+    ora (chr_addr_alt), y
+    sta (chr_addr_alt), y
 :
 
     lsr color_temp
     bcc :+
     lda b
-    ora chr_buf, y
-    sta chr_buf, y
+    ora (chr_addr), y
+    sta (chr_addr), y
 :
     lsr color_temp
     bcc :+
     lda b
-    ora chr_buf+8, y
-    sta chr_buf+8, y
+    ora (chr_addr_alt), y
+    sta (chr_addr_alt), y
 :
     iny
     cpy #8
     bne ptLoop
-
-    ; Write to PPU.
-
-    bit PPUSTATUS
-    bit PPUCTRL
-    lda ppu_dest_ptr+1
-    sta PPUADDR
-    lda ppu_dest_ptr+0
-    sta PPUADDR
-    ldx #0
-:
-    lda chr_buf, x
-    sta PPUDATA
-    inx
-    cpx #16
-    bne :-
 
     ; Push neighbors.
 
@@ -506,7 +489,31 @@ noDownNeighbor:
     pha
 noUpNeighbor:
 
-    jmp pullLoop
+    lda chr_addr+0
+    clc
+    adc #16
+    sta chr_addr+0
+    bcc :+
+    inc chr_addr+1
+:
+
+    lda chr_addr_alt+0
+    clc
+    adc #16
+    sta chr_addr_alt+0
+    bcc :+
+    inc chr_addr_alt+1
+:
+
+    ldx dest_ptr_x
+    lda ppu_dest_ptr+0
+    sta ppu_dest_ptr_lo, x
+    lda ppu_dest_ptr+1
+    sta ppu_dest_ptr_hi, x
+    inx
+    stx dest_ptr_x
+
+    jmp (return_addr)
 .endproc
 
 .proc move_cursor
@@ -572,13 +579,100 @@ noUpNeighbor:
 .endproc
 
 .proc nmi_handler
+    pha
+    txa
+    pha
+    tya
+    pha
+
+    lda is_flooding
+    bne :+
+    jmp notFlooding
+:
+
+.repeat 4, i
+    lda #i
+    cmp new_tile_count
+    bcs :++
+    bit PPUSTATUS
+    lda ppu_dest_ptr_hi+i
+    sta PPUADDR
+    lda ppu_dest_ptr_lo+i
+    sta PPUADDR
+    ldx #0
+:
+    lda chr_buf+i*16, x
+    sta PPUDATA
+    inx
+    lda chr_buf+i*16, x
+    sta PPUDATA
+    inx
+    cpx #16
+    bne :-
+:
+.endrepeat
+
+
+notFlooding:
+
+    ; Do sprite DMA.
+    jsr ppu_set_sprites
+
+    lda #PPUCTRL_NMI_ON
+    sta PPUCTRL
+
+    lda #PPUMASK_BG_ON | PPUMASK_SPR_ON | PPUMASK_NO_BG_CLIP | PPUMASK_NO_SPR_CLIP
+    sta PPUMASK
+
+    lda #0
+    sta PPUSCROLL
+    sta PPUSCROLL
+    sta PPUADDR
+    sta PPUADDR
+
+    jsr read_gamepad
+    jsr move_cursor
+    jsr prepare_sprites
+
     inc nmi_counter     ; Notify the main loop that NMI occured.
+    pla
+    tay
+    pla
+    tax
+    pla
     rti
 .endproc
 
 .proc irq_handler
     rti
 .endproc
+
+
+.proc screen_split
+waitForSprite0Clear:
+    bit PPUSTATUS
+    bvs waitForSprite0Clear
+
+    ldx #0
+    ldy #120
+    tya
+    and #$F8
+    asl
+    asl
+waitForSprite0Hit:
+    bit PPUSTATUS
+    bvc waitForSprite0Hit
+
+    stx PPUADDR
+    sty PPUSCROLL
+    stx PPUSCROLL
+    sta PPUADDR
+
+    lda #PPUCTRL_NMI_ON | PPUCTRL_BG_PT_1000
+    sta PPUCTRL
+    rts
+.endproc
+
 
 .macro wait_for_nmi frames_to_wait
     .local nmiLoop
@@ -601,7 +695,9 @@ noUpNeighbor:
     lda #0
     sta PPUCTRL
     sta PPUMASK
-
+    sta buttons_held
+    sta buttons_pressed
+    sta is_flooding
 
     lda #%00111111
     ldx #0
@@ -611,8 +707,6 @@ noUpNeighbor:
     inx
     bne :-
 .endrepeat
-
-    ;bankswitch_to bg_chr
 
     lda #1
     sta cursor_color
@@ -638,83 +732,99 @@ noUpNeighbor:
     ldy #0
     jsr set_chr
 
-    lda #9
-    sta tile_x
-    lda #9
-    sta tile_y
-    ;jsr set_foo
-    lda #9
-    sta tile_x
-    lda #8
-    sta tile_y
-    ;jsr set_foo
-
+    bit PPUSTATUS
+    lda #$0F
+    sta PPUADDR
+    lda #$F0
+    sta PPUADDR
+    ldx #0
+:
+    lda pencil, x
+    sta PPUDATA
+    inx
+    cpx #16
+    bne :-
 
     jsr set_nt
 
     jsr prepare_sprites
 
-    lda #0
-    sta PPUADDR
-    sta PPUADDR
-
     lda #PPUCTRL_NMI_ON
     sta PPUCTRL
 
+    wait_for_nmi
 forever:
-    jsr read_gamepad
-    jsr move_cursor
-    jsr prepare_sprites
-
-    lda buttons_pressed
+    lda buttons_held
     and #BUTTON_A
-    beq :+
-    wait_for_nmi
-    lda #0 
-    sta PPUMASK
-    jsr flood_fill
-:
+    beq noFF
+    ; do FF
 
-    wait_for_nmi
-
-    ; Do sprite DMA.
-    jsr ppu_set_sprites
-
-    lda # PPUCTRL_8X16_SPR | PPUCTRL_NMI_ON
-    sta PPUCTRL
-
-    lda #PPUMASK_BG_ON | PPUMASK_SPR_ON | PPUMASK_NO_BG_CLIP | PPUMASK_NO_SPR_CLIP
-    sta PPUMASK
+    lda #4
+    sta fill_counter
 
     lda #0
-    sta PPUSCROLL
-    sta PPUSCROLL
-    sta PPUADDR
-    sta PPUADDR
+    sta new_tile_count
+    sta dest_ptr_x
 
-waitForSprite0Clear:
-    bit PPUSTATUS
-    bvs waitForSprite0Clear
+    lda #.lobyte(chr_buf)
+    sta chr_addr+0
+    lda #.hibyte(chr_buf)
+    sta chr_addr+1
+    lda #.lobyte(chr_buf+8)
+    sta chr_addr_alt+0
+    lda #.hibyte(chr_buf+8)
+    sta chr_addr_alt+1
 
-    ldx #0
-    ldy #120
-    tya
-    and #$F8
-    asl
-    asl
+    lda #.lobyte(started_ff)
+    sta return_addr+0
+    lda #.hibyte(started_ff)
+    sta return_addr+1
+    tsx
+    stx empty_stack
+    jmp start_flood_fill
+started_ff:
 
-waitForSprite0Hit:
-    bit PPUSTATUS
-    bvc waitForSprite0Hit
+    lda #.lobyte(ff_dun)
+    sta return_addr+0
+    lda #.hibyte(ff_dun)
+    sta return_addr+1
+ff_loop:
+    tsx
+    cpx empty_stack
+    beq done_ff
 
-    stx PPUADDR
-    sty PPUSCROLL
-    stx PPUSCROLL
-    sta PPUADDR
+    jmp flood_fill_step
+ff_dun:
+    inc new_tile_count
 
-    lda # PPUCTRL_8X16_SPR | PPUCTRL_NMI_ON | PPUCTRL_BG_PT_1000
-    sta PPUCTRL
+    dec fill_counter
+    bne ff_loop
 
+    lda #4
+    sta fill_counter
+
+    lda #0
+    sta dest_ptr_x
+    lda #.lobyte(chr_buf)
+    sta chr_addr+0
+    lda #.hibyte(chr_buf)
+    sta chr_addr+1
+    lda #.lobyte(chr_buf+8)
+    sta chr_addr_alt+0
+    lda #.hibyte(chr_buf+8)
+    sta chr_addr_alt+1
+
+    wait_for_nmi
+    jsr screen_split
+    lda #0
+    sta new_tile_count
+    jmp ff_loop
+done_ff:
+noFF:
+    wait_for_nmi
+    jsr screen_split
+    lda #0
+    sta is_flooding
     jmp forever
 .endproc
 

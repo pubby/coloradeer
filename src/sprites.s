@@ -59,10 +59,9 @@ clearOAMLoop:
     ; Set sprite0 now to guarantee that it's uploaded.
     lda #118
     sta CPU_OAM         ; y-position
-    lda #PATTERN(0)
+    lda #$FF
     sta CPU_OAM+1       ; Pattern
-    ;lda #%00100000
-    lda #%00000000
+    lda #%00100000
     sta CPU_OAM+2       ; Attribute
     lda #234
     sta CPU_OAM+3       ; x-position
@@ -71,11 +70,13 @@ clearOAMLoop:
 
 .proc prepare_cursor_sprite
     ; Set sprite0 now to guarantee that it's uploaded.
-    lda cursor_y
+    ldy cursor_y
+    dey
+    tya
     sta CPU_OAM, x
-    lda #PATTERN(0)
+    lda #$FF
     sta CPU_OAM+1, x
-    lda #%00000000
+    lda cursor_color
     sta CPU_OAM+2, x    ; Attribute
     lda cursor_x
     sta CPU_OAM+3, x
